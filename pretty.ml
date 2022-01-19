@@ -89,7 +89,6 @@ module type PRETTY_CORE = sig
   type token
   val string : string -> token
   val space : token
-  val newline : token
   val break : int -> int -> token
   val block : int -> token list -> token
   val hvblock : int -> token list -> token
@@ -111,7 +110,6 @@ module Pretty_core : PRETTY_CORE = struct
       | Block of block_type * token list * int * int
       | String of string
       | Break of int * int
-      | Newline
   ;;
 
   let rec breakdist after = function
@@ -120,7 +118,7 @@ module Pretty_core : PRETTY_CORE = struct
         match t with
         | Block (_, _, _, len) -> len + breakdist after es
         | String s -> String.length s + breakdist after es
-        | Break _ | Newline -> 0
+        | Break _ -> 0
   ;;
 
   let print margin tok =
@@ -145,7 +143,7 @@ module Pretty_core : PRETTY_CORE = struct
                      | Horizontal_vertical ->
                          if len <= !space then Horizontal else Vertical
                      | _ -> typ in
-          let out1 = printing typ (!space - indent)
+          let out1 = printing typ' (!space - indent)
                                   (breakdist after es) bes in
           let out2 = printing block_type blockspace after es in
           App_list.append out1 out2
@@ -185,11 +183,6 @@ module Pretty_core : PRETTY_CORE = struct
                     (App_list.append out2
                       (App_list.append out3 out4))
           end
-      | Newline :: es ->
-          let out1 = newline () in
-          let out2 = blanks (margin - blockspace) in
-          let out3 = printing block_type blockspace after es in
-          App_list.append out1 (App_list.append out2 out3)
       | [] -> App_list.empty in
     printing Compacting margin 0 [tok]
   ;;
@@ -200,9 +193,6 @@ module Pretty_core : PRETTY_CORE = struct
   let break l i = Break (l, i)
   ;;
 
-  let newline = Newline
-  ;;
-
   let space = Break (1, 0)
   ;;
 
@@ -211,8 +201,7 @@ module Pretty_core : PRETTY_CORE = struct
       function
       | Block (_, _, _, len) -> len
       | String s -> String.length s
-      | Break (len, _) -> len
-      | Newline -> 0 in
+      | Break (len, _) -> len in
     let sum = List.fold_left (fun s t -> s + length t) 0 in
     fun indent toks -> Block (typ, toks, indent, sum toks)
   ;;
@@ -223,10 +212,10 @@ module Pretty_core : PRETTY_CORE = struct
   let hblock = mk_block Horizontal 0
   ;;
 
-  let vblock = block
+  let vblock = mk_block Vertical
   ;;
 
-  let hvblock = block
+  let hvblock = mk_block Horizontal_vertical
   ;;
 
 end (* struct *)
@@ -242,6 +231,8 @@ module type PRETTY_IMP = sig
   val print_string : state -> string -> unit
   val print_break : state -> int -> int -> unit
   val print_space : state -> unit
+  (* Badly chosen name: means 'close all blocks and print a newline character'.
+   *)
   val print_newline : state -> unit
   val to_token : state -> Pretty_core.token
 end (* sig *)
@@ -308,9 +299,6 @@ module Pretty_imp : PRETTY_IMP = struct
   let print_break st l i = st_insert st (Pretty_core.break l i)
   ;;
 
-  let print_newline st = st_insert st Pretty_core.newline
-  ;;
-
   let print_space st = st_insert st Pretty_core.space
   ;;
 
@@ -333,6 +321,17 @@ module Pretty_imp : PRETTY_IMP = struct
     let tq = st_remove st in
     let tok = tq_to_block tq in
     st_insert st tok
+  ;;
+
+  let rec st_flush st =
+    try close_block st;
+        st_flush st
+    with Failure _ -> ()
+  ;;
+
+  let print_newline st =
+    st_flush st;
+    st_insert st (Pretty_core.string "\n")
   ;;
 
   let to_token (St st) =
@@ -372,7 +371,7 @@ module Pretty : PRETTY = struct
 
   include Pretty_imp;;
 
-  let margin = ref 78;;
+  let margin = ref 60;;
 
   let print_stdout printer data =
     let st = empty () in
