@@ -141,11 +141,10 @@ module Pretty_core : PRETTY_CORE = struct
           (* If a Horizontal_vertical block fits on the line, print it as
              if it were Horizontal, otherwise print it as if it were
              vertical. *)
-          let typ' =
-            match typ with
-            | Horizontal_vertical ->
-                if len <= !space then Horizontal else Vertical in
-            | _ -> typ in
+          let typ' = match typ with
+                     | Horizontal_vertical ->
+                         if len <= !space then Horizontal else Vertical
+                     | _ -> typ in
           let out1 = printing typ (!space - indent)
                                   (breakdist after es) bes in
           let out2 = printing block_type blockspace after es in
@@ -214,7 +213,7 @@ module Pretty_core : PRETTY_CORE = struct
       | String s -> String.length s
       | Break (len, _) -> len
       | Newline -> 0 in
-    let sum = List.fold_left (fun s t -> s + block_length t) 0 in
+    let sum = List.fold_left (fun s t -> s + length t) 0 in
     fun indent toks -> Block (typ, toks, indent, sum toks)
   ;;
 
