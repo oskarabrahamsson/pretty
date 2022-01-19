@@ -113,7 +113,7 @@ module Pretty_core : PRETTY_CORE = struct
     let rec printing blockspace after toks =
       match toks with
       | Block (bes, indent, len) :: es ->
-          let out1 = printing (!space - indent) (blockspace after es) bes in
+          let out1 = printing (!space - indent) (breakdist after es) bes in
           let out2 = printing blockspace after es in
           App_list.append out1 out2
       | String s :: es ->
@@ -131,7 +131,7 @@ module Pretty_core : PRETTY_CORE = struct
             let out2 = blanks (margin - blockspace) in
             let out3 = printing blockspace after es in
             App_list.append out1 (App_list.append out2 out3)
-      | Newline ->
+      | Newline :: es ->
           let out1 = newline () in
           let out2 = blanks (margin - blockspace) in
           let out3 = printing blockspace after es in
@@ -172,13 +172,15 @@ module type PRETTY_IMP = sig
   val close_block : state -> unit
   val print_string : state -> string -> unit
   val print_break : state -> int -> int -> unit
+  val print_space : state -> unit
+  val print_newline : state -> unit
   val to_token : state -> Pretty_core.token
 end (* sig *)
 
 module Pretty_imp : PRETTY_IMP = struct
   type token_queue =
-    Token_queue of Pretty.token list *   (* stack of tokens *)
-                   int                   (* block indent    *)
+    Token_queue of Pretty_core.token list *   (* stack of tokens *)
+                   int                        (* block indent    *)
   ;;
 
   let tq_empty ind = Token_queue ([], ind)
@@ -189,7 +191,7 @@ module Pretty_imp : PRETTY_IMP = struct
   ;;
 
   let tq_to_block (Token_queue (ts, ind)) =
-    Pretty.block ind (List.rev ts)
+    Pretty_core.block ind (List.rev ts)
   ;;
 
   type state =
@@ -218,14 +220,26 @@ module Pretty_imp : PRETTY_IMP = struct
         end
   ;;
 
-  let print_string st str = st_insert st (Pretty.string str)
+  let print_string st str = st_insert st (Pretty_core.string str)
   ;;
 
-  let print_break st len = st_insert st (Pretty.break len)
+  let print_break st len _ = st_insert st (Pretty_core.break len)
+  ;;
+
+  let print_newline st = st_insert st Pretty_core.newline
+  ;;
+
+  let print_space st = st_insert st Pretty_core.space
   ;;
 
   let open_block (St st) indent =
     st := tq_empty indent :: !st
+  ;;
+
+  let open_hblock = open_block
+  ;;
+
+  let open_hvblock = open_block
   ;;
 
   let close_block st =
@@ -268,9 +282,9 @@ end (* sig *)
 
 module Pretty : PRETTY = struct
 
-  open Pretty_imp;;
+  include Pretty_imp;;
 
-  val margin = ref 78;;
+  let margin = ref 78;;
 
   let print_stdout printer data =
     let st = empty () in
@@ -291,7 +305,7 @@ module Pretty : PRETTY = struct
     printer st data;
     let tok = to_token st in
     let apps = Pretty_core.print (!margin) tok in
-
     App_list.concat apps;;
+
 end (* struct *)
 
