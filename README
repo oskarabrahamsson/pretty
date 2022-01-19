@@ -1,0 +1,9 @@
+A modified implementation of the pretty-printer from L.C. Paulson's
+ML for the working programmer. The printer has been extended with three
+different block types, each with a different behavior when it comes to breaking
+lines. These block types correspond to three box types offered by the OCaml
+Format library, which is used by the HOL light pretty-printer.
+
+This code also includes an imperative wrapper around the (mostly-functional)
+pretty printer core, which attempts to emulate the semantics of (parts of) the
+Format library.
