@@ -6,7 +6,11 @@
    - Within a (horizontal) hblock, break hints never split the line,
    - within a (vertical) vblock, break hints always split the line,
    - within a (horizontal/vertical) hvblock, break hints split the line when
-     the block does not fit on the current line.
+     the block does not fit on the current line,
+   - within a compacting block (the standard block), a break hint never splits
+     the line unless there is no more space on the current line.
+
+   (I think the blocks are slightly broken at the moment.)
  *)
 
 module type APP_LIST = sig
@@ -89,7 +93,7 @@ module type PRETTY_CORE = sig
   val break : int -> int -> token
   val block : int -> token list -> token
   val hvblock : int -> token list -> token
-  val hblock : int -> token list -> token
+  val hblock : token list -> token
   val vblock : int -> token list -> token
   val print : int -> token -> string App_list.app_list
 end (* sig *)
@@ -99,8 +103,8 @@ module Pretty_core : PRETTY_CORE = struct
   type block_type =
     | Horizontal
     | Vertical
-    | HorizontalVertical
-    | Standard
+    | Horizontal_vertical
+    | Compacting
   ;;
 
   type token =
@@ -131,34 +135,64 @@ module Pretty_core : PRETTY_CORE = struct
         space := margin;
         App_list.list ["\n"]
       end in
-    let rec printing blockspace after toks =
+    let rec printing block_type blockspace after toks =
       match toks with
       | Block (typ, bes, indent, len) :: es ->
-          let out1 = printing (!space - indent) (breakdist after es) bes in
-          let out2 = printing blockspace after es in
+          (* If a Horizontal_vertical block fits on the line, print it as
+             if it were Horizontal, otherwise print it as if it were
+             vertical. *)
+          let typ' =
+            match typ with
+            | Horizontal_vertical ->
+                if len <= !space then Horizontal else Vertical in
+            | _ -> typ in
+          let out1 = printing typ (!space - indent)
+                                  (breakdist after es) bes in
+          let out2 = printing block_type blockspace after es in
           App_list.append out1 out2
       | String s :: es ->
           let _ = space := !space - String.length s in
           let out1 = App_list.list [s] in
-          let out2 = printing blockspace after es in
+          let out2 = printing block_type blockspace after es in
           App_list.append out1 out2
-      | Break (len, _) :: es ->
-          if len + breakdist after es <= !space then
-            let out1 = blanks len in
-            let out2 = printing blockspace after es in
-            App_list.append out1 out2
-          else
-            let out1 = newline () in
-            let out2 = blanks (margin - blockspace) in
-            let out3 = printing blockspace after es in
-            App_list.append out1 (App_list.append out2 out3)
+      | Break (len, offset) :: es -> (* Depends on the block type: *)
+          begin
+            match block_type with
+            | Horizontal -> (* Never split the line at this level *)
+                let out1 = blanks len in
+                let out2 = printing block_type blockspace after es in
+                App_list.append out1 out2
+            | Vertical -> (* Always split the line at this level *)
+                let out1 = newline () in
+                let out2 = blanks offset in
+                let out3 = blanks (margin - blockspace) in
+                let out4 = printing block_type blockspace after es in
+                App_list.append out1
+                  (App_list.append out2
+                    (App_list.append out3 out4))
+            | Horizontal_vertical -> (* should not happen *)
+                failwith "Pretty_core.print: Horizontal_vertical box"
+            | Compacting ->
+                if len + breakdist after es <= !space then
+                  let out1 = blanks len in
+                  let out2 = printing block_type blockspace after es in
+                  App_list.append out1 out2
+                else
+                  let out1 = newline () in
+                  let out2 = blanks offset in
+                  let out3 = blanks (margin - blockspace) in
+                  let out4 = printing block_type blockspace after es in
+                  App_list.append out1
+                    (App_list.append out2
+                      (App_list.append out3 out4))
+          end
       | Newline :: es ->
           let out1 = newline () in
           let out2 = blanks (margin - blockspace) in
-          let out3 = printing blockspace after es in
+          let out3 = printing block_type blockspace after es in
           App_list.append out1 (App_list.append out2 out3)
       | [] -> App_list.empty in
-    printing margin 0 [tok]
+    printing Compacting margin 0 [tok]
   ;;
 
   let string s = String s
@@ -170,20 +204,24 @@ module Pretty_core : PRETTY_CORE = struct
   let newline = Newline
   ;;
 
-  let space = String " "
+  let space = Break (1, 0)
   ;;
 
-  let block =
+  let mk_block typ =
     let length =
       function
       | Block (_, _, _, len) -> len
       | String s -> String.length s
-      | Break (len, _) -> len in
-    let sum = List.fold_left (fun s t -> s + length t) 0 in
-    fun indent toks -> Block (Standard, toks, indent, sum toks)
+      | Break (len, _) -> len
+      | Newline -> 0 in
+    let sum = List.fold_left (fun s t -> s + block_length t) 0 in
+    fun indent toks -> Block (typ, toks, indent, sum toks)
   ;;
 
-  let hblock = block
+  let block = mk_block Compacting
+  ;;
+
+  let hblock = mk_block Horizontal 0
   ;;
 
   let vblock = block
@@ -199,9 +237,8 @@ module type PRETTY_IMP = sig
   val empty : unit -> state
   val open_block : state -> int -> unit
   val open_hvblock : state -> int -> unit
-  val open_hblock : state -> int -> unit
+  val open_hblock : state -> unit
   val open_vblock : state -> int -> unit
-  val open_hovblock : state -> int -> unit
   val close_block : state -> unit
   val print_string : state -> string -> unit
   val print_break : state -> int -> int -> unit
@@ -215,8 +252,8 @@ module Pretty_imp : PRETTY_IMP = struct
   type block_type =
     | H_block
     | V_block
-    | HV_block
-    | HOV_block
+    | Hv_block
+    | C_block
   ;;
 
   type token_queue =
@@ -234,23 +271,23 @@ module Pretty_imp : PRETTY_IMP = struct
 
   let tq_to_block (Token_queue (ts, ind, typ)) =
     match typ with
-    | H_block -> Pretty_core.hblock ind (List.rev ts)
-    | HV_block -> Pretty_core.hvblock ind (List.rev ts)
+    | H_block -> Pretty_core.hblock (List.rev ts)
+    | Hv_block -> Pretty_core.hvblock ind (List.rev ts)
     | V_block -> Pretty_core.vblock ind (List.rev ts)
-    | HOV_block -> Pretty_core.block ind (List.rev ts)
+    | C_block -> Pretty_core.block ind (List.rev ts)
   ;;
 
   type state =
     St of token_queue list ref (* intermediate result *)
   ;;
 
-  let empty () : state = St (ref [tq_empty 0 H_block])
+  let empty () : state = St (ref [tq_empty 0 C_block])
   ;;
 
   let st_insert (St qs) tok =
     match !qs with
     | [] ->
-        qs := [tq_enqueue (tq_empty 0 H_block) tok]
+        qs := [tq_enqueue (tq_empty 0 C_block) tok]
     | tq::tqs ->
         qs := tq_enqueue tq tok :: tqs
   ;;
@@ -281,16 +318,13 @@ module Pretty_imp : PRETTY_IMP = struct
   let new_block (St st) indent typ =
     st := tq_empty indent typ :: !st
 
-  let open_block st indent = new_block st indent HOV_block
+  let open_block st indent = new_block st indent C_block
   ;;
 
-  let open_hovblock = open_block
+  let open_hblock st = new_block st 0 H_block
   ;;
 
-  let open_hblock st indent = new_block st indent H_block
-  ;;
-
-  let open_hvblock st indent = new_block st indent HV_block
+  let open_hvblock st indent = new_block st indent Hv_block
   ;;
 
   let open_vblock st indent = new_block st indent V_block
@@ -321,8 +355,7 @@ module type PRETTY = sig
 
   val open_block : state -> int -> unit
   val open_hvblock : state -> int -> unit
-  val open_hblock : state -> int -> unit
-  val open_hovblock : state -> int -> unit
+  val open_hblock : state -> unit
   val open_vblock : state -> int -> unit
   val close_block : state -> unit
 
